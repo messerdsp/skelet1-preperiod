@@ -55,14 +55,16 @@ resolved yet; see "Open issue" below.
   107,917 cells to the right, as expected. The left tape beyond 100 million cells is replaced by a sentinel
   that stops the program if reached; it was never reached.
 * Restarting the accelerated run from a saved snapshot gives the same step counts.
+* Chunked run: every uni-cycle jump split into halves (so each cost is re-measured at the midpoint) and the
+  three-cycle affinity check on every jump. Same cycle-hit step counts, digit for digit.
 
 ## Open issue
 
 The 3.37·10^26 gap from hipparcos's estimate is unexplained. It is not a multiple of the period. The
-most likely places for an error on this side are the uni-cycle extrapolation (about 1.9·10^20 uni-cycles in
-total, too many to simulate one by one) and the counter formula at nesting depths above 10. A run that splits
-every uni-cycle jump into halves and checks affinity on every jump is the next test. Comparing with however
-hipparcos computed the estimate would settle it.
+uni-cycle extrapolation passed the chunked test above, so it is at least internally consistent. Remaining
+checks on this side: uni-cycle costs re-measured with only Pavel's base rules (no counter formula), and counter
+strides deeper than 10 digits brute-forced. Comparing with however hipparcos computed the estimate would settle
+it.
 
 ## Reproduce
 
