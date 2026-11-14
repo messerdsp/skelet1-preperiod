@@ -1,0 +1,355 @@
+--- a/src/bin/no1.rs
++++ b/src/bin/no1x.rs
+@@ -3,6 +3,7 @@
+ use color_eyre::eyre::Result;
+ use derivative::Derivative;
+ use owo_colors::OwoColorize;
++use num_bigint::{BigInt, BigUint};
+ use std::{
+     collections::VecDeque,
+     fmt,
+@@ -46,6 +47,13 @@
+ 
+ type Tape = Vec<Item>;
+ 
++// Right tape of the translated-cycle config `0 > x^7639 D x^10347 3 ... 3 x^3849 P` (from test translated_cycle), head-side first.
++const TC_RTAPE: [Item; 33] = {
++    use Item::*;
++    [X(7639), D, X(10347), C(3), X(7635), D, X(10355), C(3), X(7619), D, X(10387), C(3), X(7555), D, X(10515), C(3),
++     X(7299), D, X(11027), C(3), X(6275), D, X(13075), C(3), X(2179), D, D, X(7088), C(3), X(1), C(3), X(3849), P]
++};
++
+ mod block {
+     use super::Item::{self, *};
+     pub const LEFT_A: [Item; 4] = [C(2), X(7640), D, X(10344)];
+@@ -63,6 +71,8 @@
+     num_counter_increments: Exp,
+     // **Incomplete** Number of base TM steps ... currently does not include steps from any accelerations.
+     num_tm_steps: Exp,
++    // Exact TM steps contributed by accelerations (counter strides, uni-cycles).
++    accel_steps: BigUint,
+     // Number of times accelerate() is applied (Counter acceleration).
+     num_strides: u64,
+     // Number of times try_uni_cycle() is applied (@uni-cycle accleration).
+@@ -98,6 +108,47 @@
+     idxs: Vec<usize>,
+ }
+ 
++fn item_plain(i: &Item) -> String {
++    match *i {
++        Item::D => "D".into(), Item::P => "P".into(), Item::C(c) => format!("{c}"), Item::X(n) => format!("x^{n}"),
++        Item::L(r) => format!("L({r})"), Item::E { block, exp } => format!("{}^{exp}", (block + b'a') as char),
++        Item::Unreachable => "!".into(),
++    }
++}
++
++// R+L sweep cost of one item (right sweep + left sweep).
++fn rl_cost(item: &Item) -> BigUint {
++    match *item {
++        Item::X(n) => BigUint::from(n) * 16u32,
++        Item::D => BigUint::from(16u32),
++        Item::E { block: 1, exp } => BigUint::from(exp) * 1_726_192u32,
++        _ => panic!("rl_cost: unexpected item {item:?}"),
++    }
++}
++
++/// Exact TM steps of `n` level-1 counter strides from `> rtape` to `< rtape'`.
++fn counter_cost(rtape: &[Item], n: Exp) -> BigUint {
++    assert_eq!(rtape.first(), Some(&Item::P));
++    let mut segs: Vec<BigUint> = vec![BigUint::default()];
++    for item in rtape[1..].iter().rev() {
++        match item {
++            Item::C(3) => segs.push(BigUint::default()),
++            Item::C(_) => panic!("counter_cost: non-3 digit"),
++            _ => { let c = rl_cost(item); *segs.last_mut().unwrap() += c; }
++        }
++    }
++    let k = segs.len() - 1;
++    let mut st = segs[k].clone() + 9u32;
++    let mut d = BigUint::default();
++    for j in (1..=k).rev() {
++        st = segs[j - 1].clone() + 99u32 + st * 4u32 + d.clone() * 6u32;
++        d = d * 16u32 + 112u32;
++    }
++    let n = BigUint::from(n);
++    let tri = if n > BigUint::default() { n.clone() * (n.clone() - 1u32) / 2u32 } else { BigUint::default() };
++    n * st + d * tri
++}
++
+ impl CounterAccel {
+     fn new(rtape: &[Item]) -> Option<CounterAccel> {
+         if !rtape.first().is_some_and(|i| *i == Item::P) {
+@@ -142,8 +193,11 @@
+         )
+     }
+ 
+-    fn apply(&self, num_strides: Exp, rtape: &mut Tape, stats: &mut SimStats) {
++    fn apply(&self, num_strides: Exp, rtape: &mut Tape, stats: &mut SimStats, count: bool) {
+         assert!(self.max_apply >= num_strides);
++        if count {
++            stats.accel_steps += counter_cost(rtape, num_strides);
++        }
+         let mut move_exp_value = num_strides;
+         self.idxs.iter().for_each(|&idx| {
+             if let Some(Item::X(exp)) = rtape.get_mut(idx) {
+@@ -175,6 +229,11 @@
+ 
+     #[derivative(PartialEq = "ignore")]
+     stats: SimStats,
++    #[derivative(PartialEq = "ignore")]
++    trace: bool,
++    #[derivative(PartialEq = "ignore")]
++    tc_hits: u32,
++
+ }
+ 
+ impl Configuration {
+@@ -189,6 +248,8 @@
+             dir: Direction::Right,
+             sim_step: 0,
+             stats: Default::default(),
++            trace: std::env::var("NO1X_TRACE").is_ok(),
++        tc_hits: 0,
+         }
+     }
+ 
+@@ -543,7 +604,7 @@
+ 
+     // Attempt to apply the @uni-cycle https://www.sligocki.com/2023/02/25/skelet-1-wip.html
+     #[rustfmt::skip]
+-    fn try_uni_cycle(&mut self, counter: &CounterAccel) -> bool {
++    fn try_uni_cycle(&mut self, counter: &CounterAccel, limit: Exp) -> bool {
+         // Example config:
+         //   84719:  ! a^1 1 x^7640 D x^10345 3 x^7639 D x^10347 3 x^7635 D x^10355 1 x^7618 D x^10389 2 x^7550 D x^10524 0 x^7279 D x^11066 3 x^6197 D x^13231 1 x^1866 DD x^7713 0 x^95 2D x^598586766 1D >  x^300 D x^30826  b^8 D x^42804942 D x^3076 D x^1538 D x^300 D x^21397226 D x^13012670 D x^2139716 D x^1069858 D x^213964 D x^21621178 D x^3440996 D x^1720498 D x^344092 D x^1414318 D x^223068 D x^211854560 3 x^673806909 P
+         if let (
+@@ -569,7 +630,7 @@
+             // max cycles before there is a crash on right side.
+             let max_cycles_right = counter.max_apply / UNI_CYCLE_STRIDE;
+             // We cycle until one of the two above is imminent.
+-            let num_cycles = max_cycles_left.min(max_cycles_right);
++            let num_cycles = max_cycles_left.min(max_cycles_right).min(limit);
+             if num_cycles > 0 {
+                 // Apply updates to left half of tape.
+                 *big_count -= num_cycles.checked_mul(UNI_CYCLE_REDUCE).unwrap();
+@@ -578,7 +639,7 @@
+ 
+                 // Apply updates to right half of tape.
+                 let num_strides = num_cycles.checked_mul(UNI_CYCLE_STRIDE).unwrap();
+-                counter.apply(num_strides, &mut self.rtape, &mut self.stats);
++                counter.apply(num_strides, &mut self.rtape, &mut self.stats, false);
+ 
+                 return true;
+             }
+@@ -586,18 +647,124 @@
+         false
+     }
+ 
++    /// a_count if the uni-cycle tape pattern matches (regardless of how many cycles fit).
++    fn uni_pattern_a(&self) -> Option<Exp> {
++        if let (
++            [.., Item::E { block: 0, exp: a_count },
++                Item::C(1), Item::X(7640), Item::D, Item::X(10345),
++                Item::C(3), Item::X(7639), Item::D, Item::X(10347),
++                Item::C(3), Item::X(7635), Item::D, Item::X(10355),
++                Item::C(1), Item::X(7618), Item::D, Item::X(10389),
++                Item::C(2), Item::X(7550), Item::D, Item::X(10524),
++                Item::C(0), Item::X(7279), Item::D, Item::X(11066),
++                Item::C(3), Item::X(6197), Item::D, Item::X(13231),
++                Item::C(1), Item::X(1866), Item::D, Item::D, Item::X(7713),
++                Item::C(0), Item::X(95),
++                Item::C(2), Item::D, Item::X(big_count),
++                Item::C(1), Item::D],
++            [.., Item::E { block: 1, exp: b_count }, Item::X(30826), Item::D, Item::X(300)]
++        ) = (self.ltape.as_slice(), self.rtape.as_slice()) {
++            let _ = (big_count, b_count);
++            return Some(*a_count);
++        }
++        None
++    }
++
++    fn items_str(t: &[Item], rev: bool) -> String {
++        let v: Vec<String> = if rev { t.iter().rev().map(|i| item_plain(i)).collect() } else { t.iter().map(|i| item_plain(i)).collect() };
++        v.join(",")
++    }
++
++    fn total_steps(&self) -> BigUint {
++        BigUint::from(self.stats.num_tm_steps) + &self.stats.accel_steps
++    }
++
++    /// Number of uni-cycles try_uni_cycle would apply now (None if pattern doesn't match or 0).
++    fn uni_count(&self, counter: &CounterAccel) -> Option<Exp> {
++        self.uni_pattern_a()?;
++        let mut c = self.clone();
++        let a0 = c.uni_a();
++        if !c.try_uni_cycle(counter, Exp::MAX) { return None; }
++        Some(c.uni_a().unwrap() - a0.unwrap())
++    }
++
++    fn uni_a(&self) -> Option<Exp> {
++        let n = self.ltape.len();
++        if n < 41 { return None; }
++        match self.ltape[n - 41] { Item::E { block: 0, exp } => Some(exp), _ => None }
++    }
++
++    /// Run (without uni-cycle accel) until the uni-cycle pattern matches again with a_count+1.
++    fn run_one_uni(&mut self, cfg: &Config) -> Result<(), Err> {
++        let a0 = self.uni_a().unwrap();
++        let mut iters: u64 = 0;
++        loop {
++            self.gen_step(cfg)?;
++            iters += 1;
++            assert!(iters < 2_000_000_000, "run_one_uni: no return");
++            if self.trace && iters % 1000000 == 0 { eprintln!("uni iters {iters} rtape_len {}", self.rtape.len()); }
++            if self.dir == Direction::Right {
++                if CounterAccel::new(&self.rtape).is_some() {
++                    if let Some(a) = self.uni_pattern_a() {
++                        assert_eq!(a, a0 + 1, "uni pattern returned with wrong a_count");
++                        if self.trace { eprintln!("UNI cycle iters {iters} rtape_len {}", self.rtape.len()); }
++                        return Ok(());
++                    }
++                }
++            }
++        }
++    }
++
++    /// Add the exact step cost of `n` uni-cycles (measured on clones, extrapolated as a quadratic).
++    fn uni_exact(&mut self, n: Exp, cfg: &Config) -> Result<(), Err> {
++        let nocfg = Config { accel_uni_cycles: false, ..*cfg };
++        let mut c = self.clone();
++        let mut costs: Vec<BigInt> = Vec::new();
++        let checks = if self.stats.num_uni_cycles < 40 || std::env::var("NO1X_ALLCHECK").is_ok() { 3 } else { 2 };
++        let reps = (n.min(checks)) as usize;
++        for r in 0..reps {
++            let before = c.total_steps();
++            c.run_one_uni(&nocfg)?;
++            costs.push(BigInt::from(c.total_steps()) - BigInt::from(before));
++            if r == 0 {
++                // the simulated cycle must equal Pavel's 1-cycle jump
++                let mut u = self.clone();
++                let counter = CounterAccel::new(&u.rtape).unwrap();
++                assert!(u.try_uni_cycle(&counter, 1));
++                u.sim_step = c.sim_step;
++                assert!(u == c, "uni-cycle jump != simulated cycle");
++            }
++        }
++        if costs.len() == 3 {
++            assert_eq!(&costs[2] - &costs[1], &costs[1] - &costs[0], "uni-cycle cost not affine");
++        }
++        let nn = BigInt::from(n);
++        let c0 = costs[0].clone();
++        let d = if costs.len() >= 2 { &costs[1] - &costs[0] } else { BigInt::default() };
++        let tri: BigInt = nn.clone() * (nn.clone() - BigInt::from(1u32)) / BigInt::from(2u32);
++        let total: BigInt = nn * c0 + d * tri;
++        let total: BigUint = total.to_biguint().expect("negative uni cost");
++        self.stats.accel_steps += total;
++        Ok(())
++    }
++
+     fn gen_step(&mut self, cfg: &Config) -> Result<(), Err> {
+         if self.dir == Direction::Right && (cfg.accel_uni_cycles || cfg.accel_counters) {
+             if let Some(counter) = CounterAccel::new(&self.rtape) {
+                 if cfg.accel_uni_cycles {
+-                    if self.try_uni_cycle(&counter) {
++                    let mut lim = Exp::MAX;
++                    if let Some(n) = self.uni_count(&counter) {
++                        if std::env::var("NO1X_UNI_HALF").is_ok() { lim = (n + 1) / 2; }
++                        self.uni_exact(n.min(lim), cfg)?;
++                    }
++                    if self.try_uni_cycle(&counter, lim) {
+                         self.stats.num_uni_cycles += 1;
+                         return Ok(());
+                     }
+                 }
+ 
+                 if cfg.accel_counters && !counter.idxs.is_empty() {
+-                    counter.apply(1, &mut self.rtape, &mut self.stats);
++                    counter.apply(1, &mut self.rtape, &mut self.stats, true);
+                     self.dir = Direction::Left;
+                     return Ok(());
+                 }
+@@ -608,12 +775,54 @@
+     }
+ 
+     fn run(&mut self, cfg: &Config) -> Result<(), Err> {
++        let mut snaps: VecDeque<(usize, BigUint, Direction, String, String)> = VecDeque::new();
+         while self.sim_step < cfg.sim_step_limit {
+             let old_a = self.stats.num_a_create;
+             let old_c = self.stats.num_c_create;
+             let _old_coll = self.stats.num_collisions;
++            if self.trace && self.dir == Direction::Right {
++                if let Some(c) = CounterAccel::new(&self.rtape) {
++                    if !c.idxs.is_empty() {
++                        let l: String = self.ltape.iter().map(|i| format!("{i}").trim().to_string()).collect::<Vec<_>>().join(",");
++                        let r: String = self.rtape.iter().rev().map(|i| format!("{i}").trim().to_string()).collect::<Vec<_>>().join(",");
++                        println!("TR {} | {} = {}", l, r, self.total_steps());
++                    }
++                }
++            }
++            let big_dump = std::env::var("NO1X_BIG_DUMP").ok();
++            let before = if big_dump.is_some() { Some(self.total_steps()) } else { None };
+             self.gen_step(cfg)?;
+             self.sim_step += 1;
++            if let (Some(path), Some(b)) = (big_dump, before) {
++                let now = self.total_steps();
++                if &now - &b > BigUint::from(100_000_000_000u64) {
++                    let d = if self.dir == Direction::Left { "L" } else { "R" };
++                    std::fs::write(path, format!("{} {} {} {} | {}\n", self.sim_step, now, d, Self::items_str(&self.ltape, false), Self::items_str(&self.rtape, true))).unwrap();
++                }
++            }
++            if self.sim_step % 50_000 == 0 && std::env::var("NO1X_DUMP").is_ok() {
++                snaps.push_back((self.sim_step, self.total_steps(), self.dir, Self::items_str(&self.ltape, false), Self::items_str(&self.rtape, true)));
++                if snaps.len() > 400 { snaps.pop_front(); }
++            }
++            if self.dir == Direction::Right && self.ltape.last() == Some(&Item::C(0)) && self.rtape.len() == TC_RTAPE.len() {
++                let tc: Vec<Item> = TC_RTAPE.iter().rev().cloned().collect();
++                if self.rtape == tc {
++                    if self.tc_hits == 0 {
++                        if let Ok(path) = std::env::var("NO1X_DUMP") {
++                            let mut out = String::new();
++                            for (ss, t, d, l, r) in snaps.iter() {
++                                out += &format!("{ss} {t} {} {} | {}\n", if *d == Direction::Left { "L" } else { "R" }, l, r);
++                            }
++                            out += &format!("{} {} {} {} | {}\n", self.sim_step, self.total_steps(), "R", Self::items_str(&self.ltape, false), Self::items_str(&self.rtape, true));
++                            std::fs::write(path, out).unwrap();
++                        }
++                    }
++                    let l = self.ltape.len();
++                    println!("TC sim_step={} T={} left_tail={:?}", self.sim_step, self.total_steps(), &self.ltape[l.saturating_sub(4)..]);
++                    self.tc_hits += 1;
++                    if self.tc_hits >= 3 { return Err(Err::Interesting); }
++                }
++            }
+ 
+             // Print logic
+             // if self.stats.num_collisions > _old_coll {
+@@ -667,8 +876,9 @@
+     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+         write!(
+             f,
+-            "Stats({}, {}, {}, {}, {}, {}, {})",
++            "Stats({}, T={}, {}, {}, {}, {}, {}, {})",
+             self.num_counter_increments.blue(),
++            (BigUint::from(self.num_tm_steps) + &self.accel_steps),
+             self.num_tm_steps.blue(),
+             self.num_collisions.blue(),
+             self.num_strides.blue(),
+@@ -686,6 +896,8 @@
+         dir: Direction::Right,
+         sim_step: 0,
+         stats: Default::default(),
++        trace: std::env::var("NO1X_TRACE").is_ok(),
++        tc_hits: 0,
+     };
+     let mut active_tape_dir = Direction::Left;
+     let mut tape = &mut conf.ltape;
+@@ -802,6 +1014,10 @@
+         print_only_cycles: args.print_only_cycles,
+     };
+     let mut conf = args.conf;
++    if let Ok(path) = std::env::var("NO1X_CONF_FILE") {
++        let txt = std::fs::read_to_string(path).unwrap().replace(',', " ");
++        conf = txt.trim().parse().unwrap();
++    }
+     println!("{}", conf);
+ 
+     if args.tui {
