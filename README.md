@@ -72,6 +72,17 @@ machine: the counter formula (depths 1 to 11), the uni-cycle costs (re-simulated
 jump), and the end (raw lockstep). So the gap more likely comes from how the estimate was computed, but that is
 not confirmed. Comparing with hipparcos's method would settle it.
 
+Further checks (Nov 14):
+
+* A rerun with every uni-cycle jump logged (11,602 jumps: `n`, first cycle cost, cost increment) gives the same
+  cycle hits digit for digit.
+* The gap is not one uni-cycle counted twice or missed: no jump has a cycle cost within one period of the gap.
+* Common formula slips give far larger differences than the gap: using `n^2/2` or `n(n+1)/2` in place of
+  `n(n-1)/2` changes the total by about `10^40`, and dropping one cycle per jump by about `10^44`.
+* The gap is `337393947962848037 * 10^9 + 52684`, where `52684` is much less than one period. So after a
+  shift of less than one period the two values agree in their last 9 digits. That would happen by chance about
+  1 time in 10^4, so it hints that one of the two computations rounded or truncated something at the `10^9` level.
+
 ## Reproduce
 
 ```bash
