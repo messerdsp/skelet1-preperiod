@@ -16,7 +16,7 @@ one based on whole tape configurations) can differ from this one by less than on
 The configuration `0 > x^7639 D ... 3 x^3849 P` used in Pavel Kropitz's `translated_cycle` test first
 occurs at step `t0 + 106,082 = 5418883027667422764169643752383445156657982789865249`.
 
-**Status: not yet confirmed independently.** This value is about `3.37 * 10^26` steps larger than the
+**Status: not yet confirmed by anyone else.** This value is about `3.37 * 10^26` steps larger than the
 estimate `5418883027667422764169643414989497193809945789706483` by @hipparcos, which the bbchallenge wiki
 describes as "probably accurate to within about one period". The two agree on the first 25 digits. That
 difference is far more than one period, so one of the two step counts is wrong somewhere. It has not been
@@ -57,14 +57,20 @@ resolved yet; see "Open issue" below.
 * Restarting the accelerated run from a saved snapshot gives the same step counts.
 * Chunked run: every uni-cycle jump split into halves (so each cost is re-measured at the midpoint) and the
   three-cycle affinity check on every jump. Same cycle-hit step counts, digit for digit.
+* Cross-checks against Pavel's base rules only (no accelerations; `data/crosschecks.txt`):
+  * 6 counter strides at nesting depth 11 run out step by step (up to 1.4·10^8 macro steps each): all equal;
+  * 17 uni-cycles (counter depth 1 to 3) re-simulated without the counter formula: all equal.
+
+  (`NO1X_DEEPCHK=1 NO1X_UNI_NOCTR=1 ./target/release/no1x 29 40 -a | grep CHK`; the run stops itself
+  later when one re-simulated uni-cycle exceeds the 2·10^9-step cap of the check.)
 
 ## Open issue
 
-The 3.37·10^26 gap from hipparcos's estimate is unexplained. It is not a multiple of the period. The
-uni-cycle extrapolation passed the chunked test above, so it is at least internally consistent. Remaining
-checks on this side: uni-cycle costs re-measured with only Pavel's base rules (no counter formula), and counter
-strides deeper than 10 digits brute-forced. Comparing with however hipparcos computed the estimate would settle
-it.
+The 3.37·10^26 gap from hipparcos's estimate is unexplained. It is not a multiple of the period. Every part
+of the step count here has been checked against Pavel's base rules, which his tests check against the raw
+machine: the counter formula (depths 1 to 11), the uni-cycle costs (re-simulated, chunked, affine on every
+jump), and the end (raw lockstep). So the gap more likely comes from how the estimate was computed, but that is
+not confirmed. Comparing with hipparcos's method would settle it.
 
 ## Reproduce
 

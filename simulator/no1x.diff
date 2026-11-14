@@ -8,21 +8,23 @@
  use std::{
      collections::VecDeque,
      fmt,
-@@ -46,6 +47,13 @@
+@@ -45,6 +46,15 @@
+ }
  
  type Tape = Vec<Item>;
- 
++static UNICHK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
++static DEEPCHK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
++
 +// Right tape of the translated-cycle config `0 > x^7639 D x^10347 3 ... 3 x^3849 P` (from test translated_cycle), head-side first.
 +const TC_RTAPE: [Item; 33] = {
 +    use Item::*;
 +    [X(7639), D, X(10347), C(3), X(7635), D, X(10355), C(3), X(7619), D, X(10387), C(3), X(7555), D, X(10515), C(3),
 +     X(7299), D, X(11027), C(3), X(6275), D, X(13075), C(3), X(2179), D, D, X(7088), C(3), X(1), C(3), X(3849), P]
 +};
-+
+ 
  mod block {
      use super::Item::{self, *};
-     pub const LEFT_A: [Item; 4] = [C(2), X(7640), D, X(10344)];
-@@ -63,6 +71,8 @@
+@@ -63,6 +73,8 @@
      num_counter_increments: Exp,
      // **Incomplete** Number of base TM steps ... currently does not include steps from any accelerations.
      num_tm_steps: Exp,
@@ -31,7 +33,7 @@
      // Number of times accelerate() is applied (Counter acceleration).
      num_strides: u64,
      // Number of times try_uni_cycle() is applied (@uni-cycle accleration).
-@@ -98,6 +108,47 @@
+@@ -98,6 +110,47 @@
      idxs: Vec<usize>,
  }
  
@@ -79,7 +81,7 @@
  impl CounterAccel {
      fn new(rtape: &[Item]) -> Option<CounterAccel> {
          if !rtape.first().is_some_and(|i| *i == Item::P) {
-@@ -142,8 +193,11 @@
+@@ -142,8 +195,11 @@
          )
      }
  
@@ -92,7 +94,7 @@
          let mut move_exp_value = num_strides;
          self.idxs.iter().for_each(|&idx| {
              if let Some(Item::X(exp)) = rtape.get_mut(idx) {
-@@ -175,6 +229,11 @@
+@@ -175,6 +231,11 @@
  
      #[derivative(PartialEq = "ignore")]
      stats: SimStats,
@@ -104,7 +106,7 @@
  }
  
  impl Configuration {
-@@ -189,6 +248,8 @@
+@@ -189,6 +250,8 @@
              dir: Direction::Right,
              sim_step: 0,
              stats: Default::default(),
@@ -113,7 +115,7 @@
          }
      }
  
-@@ -543,7 +604,7 @@
+@@ -543,7 +606,7 @@
  
      // Attempt to apply the @uni-cycle https://www.sligocki.com/2023/02/25/skelet-1-wip.html
      #[rustfmt::skip]
@@ -122,7 +124,7 @@
          // Example config:
          //   84719:  ! a^1 1 x^7640 D x^10345 3 x^7639 D x^10347 3 x^7635 D x^10355 1 x^7618 D x^10389 2 x^7550 D x^10524 0 x^7279 D x^11066 3 x^6197 D x^13231 1 x^1866 DD x^7713 0 x^95 2D x^598586766 1D >  x^300 D x^30826  b^8 D x^42804942 D x^3076 D x^1538 D x^300 D x^21397226 D x^13012670 D x^2139716 D x^1069858 D x^213964 D x^21621178 D x^3440996 D x^1720498 D x^344092 D x^1414318 D x^223068 D x^211854560 3 x^673806909 P
          if let (
-@@ -569,7 +630,7 @@
+@@ -569,7 +632,7 @@
              // max cycles before there is a crash on right side.
              let max_cycles_right = counter.max_apply / UNI_CYCLE_STRIDE;
              // We cycle until one of the two above is imminent.
@@ -131,7 +133,7 @@
              if num_cycles > 0 {
                  // Apply updates to left half of tape.
                  *big_count -= num_cycles.checked_mul(UNI_CYCLE_REDUCE).unwrap();
-@@ -578,7 +639,7 @@
+@@ -578,7 +641,7 @@
  
                  // Apply updates to right half of tape.
                  let num_strides = num_cycles.checked_mul(UNI_CYCLE_STRIDE).unwrap();
@@ -140,7 +142,7 @@
  
                  return true;
              }
-@@ -586,18 +647,124 @@
+@@ -586,18 +649,168 @@
          false
      }
  
@@ -223,6 +225,18 @@
 +            let before = c.total_steps();
 +            c.run_one_uni(&nocfg)?;
 +            costs.push(BigInt::from(c.total_steps()) - BigInt::from(before));
++            if r == 0 && std::env::var("NO1X_UNI_NOCTR").is_ok() {
++                let depth = CounterAccel::new(&self.rtape).map(|c| c.idxs.len()).unwrap_or(99);
++                if depth <= 3 && UNICHK.load(std::sync::atomic::Ordering::Relaxed) < 30 {
++                    UNICHK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
++                    let rawcfg = Config { accel_uni_cycles: false, accel_counters: false, ..*cfg };
++                    let mut z = self.clone();
++                    let b0 = z.total_steps();
++                    z.run_one_uni(&rawcfg)?;
++                    let cz = BigInt::from(z.total_steps()) - BigInt::from(b0);
++                    println!("UNICHK depth={depth} n={n} accel={} raw={} {}", costs[0], cz, if cz == costs[0] { "OK" } else { "MISMATCH" });
++                }
++            }
 +            if r == 0 {
 +                // the simulated cycle must equal Pavel's 1-cycle jump
 +                let mut u = self.clone();
@@ -245,6 +259,33 @@
 +        Ok(())
 +    }
 +
++    /// Compare one accelerated counter stride against Pavel's base rules (no accelerations).
++    fn deep_check(&self, counter: &CounterAccel, cfg: &Config) {
++        let k = counter.idxs.len();
++        let mut acc = self.clone();
++        counter.apply(1, &mut acc.rtape, &mut acc.stats, true);
++        acc.dir = Direction::Left;
++        let nocfg = Config { accel_uni_cycles: false, accel_counters: false, ..*cfg };
++        // a few configurations right after the accelerated stride, with their step counts
++        let mut seen: Vec<(Configuration, BigUint)> = Vec::new();
++        for _ in 0..20 { seen.push((acc.clone(), acc.total_steps())); if acc.gen_step(&nocfg).is_err() { break; } }
++        let mut raw = self.clone();
++        let target = self.stats.num_counter_increments + (1u128 << (2 * k));
++        let mut iters: u64 = 0;
++        loop {
++            raw.gen_step(&nocfg).unwrap();
++            iters += 1;
++            if raw.stats.num_counter_increments >= target {
++                if let Some((_, t)) = seen.iter().find(|(c, _)| { let mut c2 = c.clone(); c2.sim_step = raw.sim_step; c2 == raw }) {
++                    let ok = *t == raw.total_steps();
++                    println!("DEEPCHK depth={k} raw_macro_steps={iters} accel={} raw={} {}", t, raw.total_steps(), if ok { "OK" } else { "MISMATCH" });
++                    return;
++                }
++            }
++            if iters > 4_000_000_000 { println!("DEEPCHK depth={k} gave up"); return; }
++        }
++    }
++
      fn gen_step(&mut self, cfg: &Config) -> Result<(), Err> {
          if self.dir == Direction::Right && (cfg.accel_uni_cycles || cfg.accel_counters) {
              if let Some(counter) = CounterAccel::new(&self.rtape) {
@@ -261,13 +302,18 @@
                      }
                  }
  
++                if cfg.accel_counters && !counter.idxs.is_empty() && counter.idxs.len() >= 11
++                    && std::env::var("NO1X_DEEPCHK").is_ok() && DEEPCHK.load(std::sync::atomic::Ordering::Relaxed) < 6 {
++                    DEEPCHK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
++                    self.deep_check(&counter, cfg);
++                }
                  if cfg.accel_counters && !counter.idxs.is_empty() {
 -                    counter.apply(1, &mut self.rtape, &mut self.stats);
 +                    counter.apply(1, &mut self.rtape, &mut self.stats, true);
                      self.dir = Direction::Left;
                      return Ok(());
                  }
-@@ -608,12 +775,54 @@
+@@ -608,12 +821,54 @@
      }
  
      fn run(&mut self, cfg: &Config) -> Result<(), Err> {
@@ -322,7 +368,7 @@
  
              // Print logic
              // if self.stats.num_collisions > _old_coll {
-@@ -667,8 +876,9 @@
+@@ -667,8 +922,9 @@
      fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
          write!(
              f,
@@ -333,7 +379,7 @@
              self.num_tm_steps.blue(),
              self.num_collisions.blue(),
              self.num_strides.blue(),
-@@ -686,6 +896,8 @@
+@@ -686,6 +942,8 @@
          dir: Direction::Right,
          sim_step: 0,
          stats: Default::default(),
@@ -342,7 +388,7 @@
      };
      let mut active_tape_dir = Direction::Left;
      let mut tape = &mut conf.ltape;
-@@ -802,6 +1014,10 @@
+@@ -802,6 +1060,10 @@
          print_only_cycles: args.print_only_cycles,
      };
      let mut conf = args.conf;
