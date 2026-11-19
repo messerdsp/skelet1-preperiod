@@ -18,9 +18,9 @@ occurs at step `t0 + 106,082 = 5418883027667422764169643752383445156657982789865
 
 **Status: not yet confirmed by anyone else.** This value is about `3.37 * 10^26` steps larger than the
 estimate `5418883027667422764169643414989497193809945789706483` by @hipparcos, which the bbchallenge wiki
-describes as "probably accurate to within about one period". The two agree on the first 25 digits. That
-difference is far more than one period, so one of the two step counts is wrong somewhere. It has not been
-resolved yet; see "Open issue" below.
+describes as "probably accurate to within about one period". That gap is now explained to the last digit (see
+"The gap to the earlier estimate" below). hipparcos's simulator skips one uncounted sweep across the tape after
+13 of its uni-cycle jumps. With a one-line fix, his simulator agrees with ours at every one of the 11,602 jumps.
 
 ## Method
 
@@ -64,24 +64,93 @@ resolved yet; see "Open issue" below.
   (`NO1X_DEEPCHK=1 NO1X_UNI_NOCTR=1 ./target/release/no1x 29 40 -a | grep CHK`; the run stops itself
   later when one re-simulated uni-cycle exceeds the 2·10^9-step cap of the check.)
 
-## Open issue
+## The gap to the earlier estimate
 
-The 3.37·10^26 gap from hipparcos's estimate is unexplained. It is not a multiple of the period. Every part
-of the step count here has been checked against Pavel's base rules, which his tests check against the raw
-machine: the counter formula (depths 1 to 11), the uni-cycle costs (re-simulated, chunked, affine on every
-jump), and the end (raw lockstep). So the gap more likely comes from how the estimate was computed, but that is
-not confirmed. Comparing with hipparcos's method would settle it.
+**Summary.**
 
-Further checks (Nov 14):
+    our t0 - his estimate = 337393947962848037000052684
+                          = 337393947962848045468728629   (steps hipparcos's simulator never counts)
+                          - (P + 106082)                  (his marker event comes one period after t0)
 
-* A rerun with every uni-cycle jump logged (11,602 jumps: `n`, first cycle cost, cost increment) gives the same
-  cycle hits digit for digit.
-* The gap is not one uni-cycle counted twice or missed: no jump has a cycle cost within one period of the gap.
-* Common formula slips give far larger differences than the gap: using `n^2/2` or `n(n+1)/2` in place of
-  `n(n-1)/2` changes the total by about `10^40`, and dropping one cycle per jump by about `10^44`.
-* The gap is `337393947962848037 * 10^9 + 52684`, where `52684` is much less than one period. So after a
-  shift of less than one period the two values agree in their last 9 digits. That would happen by chance about
-  1 time in 10^4, so it hints that one of the two computations rounded or truncated something at the `10^9` level.
+Both parts are established exactly below. hipparcos's code and notes are in
+[jhuang97/turing_machine](https://github.com/jhuang97/turing_machine) (commit `5c91d34`; `src/skelet1.rs`,
+`notes/skelet1_notes.txt`, trace `turing_machine_traces/skelet1_to_tc.txt`).
+
+**The bug.** In `src/skelet1.rs`, `try_uni_cycle` computes the cost of `k` uni-cycles and then calls
+`multi_stride(k*T)` to update the counter on the right. When that counter has level 0 (no `C` on the right
+tape), `multi_stride` takes its `> w0 R ==> < w0 R` branch, which also sets `self.dir = Left`.
+`try_uni_cycle` never turns the head back to the right. The rule it implements,
+`J x^(N+P) C1 D > r  -->  F J x^N C1 D > G s^T(r)`, ends with the head facing right, and the step count it
+returns is for that configuration. So after such a jump his tape is one sweep (`> G^k r ==> < G^k r`) further
+along than his step count says. Each time this happens, the cost of that sweep is lost.
+
+* It happens at 13 of his 11,602 jumps (jumps 1166 to 11553; `data/hipparcos_skipped_sweeps.txt`, from
+  `simulator/hipparcos/unilog2.rs`). The 13 sweep costs add up to exactly 337393947962848045468728629.
+* Fix (`simulator/hipparcos/fix_dir_after_uni_cycle.diff`): set `self.dir = Right` at the end of
+  `try_uni_cycle`. With it, his step count after each of the 11,602 jumps equals ours, ending with a
+  difference of 0 (`data/uni_jumps_hipparcos_fixed.txt.gz` against `data/uni_jumps_ours.txt.gz`, compared with
+  `tools/cmp_jumps.py`). Without it, the two logs agree exactly up to jump 1166 and then differ by the
+  accumulated skipped sweeps (`data/uni_jumps_hipparcos.txt.gz`).
+* Direct look at the first case: after jump 1166, our run sweeps across the right tape 3 times before reaching
+  `D x^96588465265005731513 C x R`; his sweeps twice. The missing sweep costs 3170649210060961228601 steps,
+  exactly the cost of one sweep over the right tape at that point (`16` per `x`, `16` per `D`, `1,726,192` per
+  `G`, `9` for the bounce at `R`).
+* His own consistency check passes regardless: at jumps 1166, 1167 and 2323, his jump formula equals the cost of
+  the same cycles simulated with his base rules (`simulator/hipparcos/uniprobe.rs`). The jump costs are right.
+  Only the head direction after the jump is wrong.
+
+**The marker event.** The estimate is not a computed preperiod. It is his step count at the moment the first
+complete `a` block (`C2 x^7640 D x^10344`) appears, at his simulator step 85,256,365. His notes call it "still
+inaccurate due to the higher level simulator steps and possibly being off by some fraction of a period". That
+configuration is the one at our second cycle hit, `t0 + P + 106,082`.
+
+Earlier checks that led here:
+
+* His notes record an earlier u128 overflow in his uni-cycle step count, which he found and fixed before
+  publishing this value. That one is not the cause here.
+* The gap is not one uni-cycle counted twice or missed, and common formula slips (`n^2/2` or `n(n+1)/2` for
+  `n(n-1)/2`, one cycle dropped per jump) give differences of `10^40` or more.
+* His simulator applies the uni-cycle acceleration exactly 11,602 times, the same number of jumps as ours.
+* His multi-stride step formula (`multi_stride` in `src/skelet1.rs`) agrees exactly with the counter formula
+  above on 2,000 random counters (nesting depths 1 to 6, 1 to 50 strides).
+* His symbol encodings (`x=22 D=21 C=11 C0=232 C1=201 C2=42 P=2`, head `<C10` / `A>`) are the same as Pavel's, so
+  configurations printed in his trace convert directly to raw tapes (`tools/hip2raw.py`).
+
+**Exact difference at identical configurations.** `tools/match.c` runs the raw machine from our checkpoint and
+reports the step at which the tape, head and state equal a target configuration (compared over the whole
+30-million-cell window that the target covers). Four configurations from his trace (lines 71, 78, 82, 90; his
+simulator steps 85,255,051 to 85,256,001) each occur exactly once in our run, and every one gives the same
+difference (`data/hipparcos_matches.txt`):
+
+    our count - his count = 337393947962848045468728629   (= 39840723217854623 * P + 1615701980)
+
+So the two computations disagree by this exact amount for the same configuration. It is a pure step-count
+difference, not a difference in definitions. His "first `a` block" configuration is the one at our second
+cycle hit, `t0 + P + 106,082`, so
+
+    our t0 - his estimate = 337393947962848045468728629 - (P + 106082) = 337393947962848037000052684
+
+which is exactly the gap above. Line 71 is reached 418,995,281 raw steps before our `t0`, so the difference
+was already there before the cycle starts. That pointed to the accelerated part, and the jump-by-jump
+comparison above found the cause.
+
+```bash
+# reproduce one configuration match (about 1 minute)
+git clone https://github.com/jhuang97/turing_machine hip
+python3 tools/hip2raw.py hip/turing_machine_traces/skelet1_to_tc.txt 78 t78.txt
+gcc -O3 -o match tools/match.c
+./match tape.txt t78.txt 6000000000        # tape.txt from step 1 of "Reproduce" -> MATCH step_offset 5432308783
+
+# reproduce the jump-by-jump comparison (a few minutes each)
+cd hip && git checkout 5c91d34 && cp ../simulator/hipparcos/unilog*.rs src/bin/
+cargo build --release --bin unilog --bin unilog2
+./target/release/unilog2 | tail -1          # -> JUMPS_LEFT 13 TOTAL_SWEEP 337393947962848045468728629
+./target/release/unilog > hip.log
+patch -p1 < ../simulator/hipparcos/fix_dir_after_uni_cycle.diff
+cargo build --release --bin unilog && ./target/release/unilog > hip_fixed.log
+cd ../bbc && NO1X_UNILOG=1 ./target/release/no1x 28 40 -a | grep '^UNI ' > ../ours.log   # build as in "Reproduce"
+cd .. && python3 tools/cmp_jumps.py ours.log hip_fixed.log | tail -1    # -> after_diff 0
+```
 
 ## Reproduce
 

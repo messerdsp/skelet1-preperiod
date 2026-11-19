@@ -1,0 +1,12 @@
+--- a/src/skelet1.rs
++++ b/src/skelet1.rs
+@@ -1595,6 +1595,9 @@
+             self.left_tape.extend_from_slice(&[C1, D]);
+ 
+             self.add_or_merge_block(Right, G, num_cycles);
++            // after k uni-cycles the head is at `C1 D > G^k ...`, facing right (multi_stride's
++            // level-0 branch turns it left, which would skip one uncounted sweep)
++            self.dir = Right;
+ 
+             return Some((num_cycles, total_steps))
+         }
