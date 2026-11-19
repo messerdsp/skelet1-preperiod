@@ -19,8 +19,9 @@ occurs at step `t0 + 106,082 = 5418883027667422764169643752383445156657982789865
 **Status: not yet confirmed by anyone else.** This value is about `3.37 * 10^26` steps larger than the
 estimate `5418883027667422764169643414989497193809945789706483` by @hipparcos, which the bbchallenge wiki
 describes as "probably accurate to within about one period". The two agree on the first 25 digits. That
-difference is far more than one period, so one of the two step counts is wrong somewhere. It has not been
-resolved yet; see "Open issue" below.
+difference is far more than one period, so one of the two step counts is wrong somewhere. The difference has
+now been measured exactly at identical configurations (see "Open issue" below), but it is not yet known which
+count is wrong.
 
 ## Method
 
@@ -79,9 +80,51 @@ Further checks (Nov 14):
 * The gap is not one uni-cycle counted twice or missed: no jump has a cycle cost within one period of the gap.
 * Common formula slips give far larger differences than the gap: using `n^2/2` or `n(n+1)/2` in place of
   `n(n-1)/2` changes the total by about `10^40`, and dropping one cycle per jump by about `10^44`.
-* The gap is `337393947962848037 * 10^9 + 52684`, where `52684` is much less than one period. So after a
-  shift of less than one period the two values agree in their last 9 digits. That would happen by chance about
-  1 time in 10^4, so it hints that one of the two computations rounded or truncated something at the `10^9` level.
+* The gap is `337393947962848037 * 10^9 + 52684`. (See below: this mixes a counting difference with an
+  offset between the two marker events, so the round-looking low digits are not by themselves evidence of a
+  `10^9`-level rounding.)
+
+Where the estimate comes from (Nov 19). hipparcos's code and notes are in
+[jhuang97/turing_machine](https://github.com/jhuang97/turing_machine) (`src/skelet1.rs`,
+`notes/skelet1_notes.txt`, trace `turing_machine_traces/skelet1_to_tc.txt`):
+
+* The estimate is not a computed preperiod. It is his base-step count at the moment the first complete `a` block
+  (`C2 x^7640 D x^10344`) appears, at his simulator step 85,256,365. His notes call it "still inaccurate due to the
+  higher level simulator steps and possibly being off by some fraction of a period". The notes also record an
+  earlier u128 overflow in his uni-cycle step count, which he found and fixed before publishing this value.
+* His simulator applies the uni-cycle acceleration exactly 11,602 times, the same number of jumps as ours.
+* His multi-stride step formula (`multi_stride` in `src/skelet1.rs`) agrees exactly with the counter formula
+  above on 2,000 random counters (nesting depths 1 to 6, 1 to 50 strides).
+* His symbol encodings (`x=22 D=21 C=11 C0=232 C1=201 C2=42 P=2`, head `<C10` / `A>`) are the same as Pavel's, so
+  configurations printed in his trace convert directly to raw tapes (`tools/hip2raw.py`).
+
+**Exact difference at identical configurations.** `tools/match.c` runs the raw machine from our checkpoint and
+reports the step at which the tape, head and state equal a target configuration (compared over the whole
+30-million-cell window that the target covers). Four configurations from his trace (lines 71, 78, 82, 90; his
+simulator steps 85,255,051 to 85,256,001) each occur exactly once in our run, and every one gives the same
+difference (`data/hipparcos_matches.txt`):
+
+    our count - his count = 337393947962848045468728629   (= 39840723217854623 * P + 1615701980)
+
+So the two computations disagree by this exact amount for the same configuration. It is a pure step-count
+difference, not a difference in definitions. His "first `a` block" configuration is the one at our second
+cycle hit, `t0 + P + 106,082`, so
+
+    our t0 - his estimate = 337393947962848045468728629 - (P + 106082) = 337393947962848037000052684
+
+which is exactly the gap above. Which of the two counts is wrong is still open. Line 71 is reached 418,995,281 raw
+steps before our `t0` and lines 78 to 90 after it, so the difference is already present before the cycle starts.
+It must come from the accelerated part of one of the two runs. The next step is to log hipparcos's step count at
+each of his 11,602 uni-cycle jumps, compare that log with ours jump by jump, and find the first jump where they
+disagree.
+
+```bash
+# reproduce one match (about 1 minute)
+git clone https://github.com/jhuang97/turing_machine hip
+python3 tools/hip2raw.py hip/turing_machine_traces/skelet1_to_tc.txt 78 t78.txt
+gcc -O3 -o match tools/match.c
+./match tape.txt t78.txt 6000000000        # tape.txt from step 1 of "Reproduce" -> MATCH step_offset 5432308783
+```
 
 ## Reproduce
 
