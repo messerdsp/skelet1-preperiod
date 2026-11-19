@@ -142,7 +142,7 @@
  
                  return true;
              }
-@@ -586,18 +649,168 @@
+@@ -586,18 +649,180 @@
          false
      }
  
@@ -291,13 +291,25 @@
              if let Some(counter) = CounterAccel::new(&self.rtape) {
                  if cfg.accel_uni_cycles {
 -                    if self.try_uni_cycle(&counter) {
++                    if let Ok(k) = std::env::var("NO1X_TRACEAFTER") {
++                        if self.stats.num_uni_cycles == k.parse::<u64>().unwrap() {
++                            println!("PSTR {} {}", self.total_steps() + 19u32, Self::items_str(&self.rtape, true));
++                        }
++                    }
 +                    let mut lim = Exp::MAX;
++                    let before = self.total_steps();
++                    let mut n_log: Exp = 0;
 +                    if let Some(n) = self.uni_count(&counter) {
 +                        if std::env::var("NO1X_UNI_HALF").is_ok() { lim = (n + 1) / 2; }
++                        n_log = n.min(lim);
 +                        self.uni_exact(n.min(lim), cfg)?;
 +                    }
 +                    if self.try_uni_cycle(&counter, lim) {
                          self.stats.num_uni_cycles += 1;
++                        if std::env::var("NO1X_UNILOG").is_ok() {
++                            println!("UNI {} sim_step={} n={} before={} cost={}", self.stats.num_uni_cycles, self.sim_step,
++                                     n_log, &before + 19u32, self.total_steps() - &before);
++                        }
                          return Ok(());
                      }
                  }
@@ -313,7 +325,7 @@
                      self.dir = Direction::Left;
                      return Ok(());
                  }
-@@ -608,12 +821,54 @@
+@@ -608,12 +833,54 @@
      }
  
      fn run(&mut self, cfg: &Config) -> Result<(), Err> {
@@ -368,7 +380,7 @@
  
              // Print logic
              // if self.stats.num_collisions > _old_coll {
-@@ -667,8 +922,9 @@
+@@ -667,8 +934,9 @@
      fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
          write!(
              f,
@@ -379,7 +391,7 @@
              self.num_tm_steps.blue(),
              self.num_collisions.blue(),
              self.num_strides.blue(),
-@@ -686,6 +942,8 @@
+@@ -686,6 +954,8 @@
          dir: Direction::Right,
          sim_step: 0,
          stats: Default::default(),
@@ -388,7 +400,7 @@
      };
      let mut active_tape_dir = Direction::Left;
      let mut tape = &mut conf.ltape;
-@@ -802,6 +1060,10 @@
+@@ -802,6 +1072,10 @@
          print_only_cycles: args.print_only_cycles,
      };
      let mut conf = args.conf;
